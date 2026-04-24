@@ -1,0 +1,43 @@
+{
+  "name": "adzuna-sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for the Adzuna API",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "generate": "openapi-typescript adzuna_swagger.json -o src/schema.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run generate && bun run typecheck && bun test && bun run build"
+  },
+  "keywords": [
+    "adzuna",
+    "jobs",
+    "sdk",
+    "typescript"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "ky": "^1.7.5"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "openapi-typescript": "^7.4.4",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
