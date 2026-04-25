@@ -28,7 +28,16 @@
     "sdk",
     "typescript"
   ],
+  "author": "Josh Hubbard",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jhubbardsf/adzuna-sdk.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jhubbardsf/adzuna-sdk/issues"
+  },
+  "homepage": "https://github.com/jhubbardsf/adzuna-sdk#readme",
   "dependencies": {
     "ky": "^1.7.5"
   },
