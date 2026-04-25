@@ -4,7 +4,7 @@ Releases are **fully automated** via the [`Release`](.github/workflows/release.y
 
 ## One-Time Setup
 
-You only need to do these steps once, when setting up the repo.
+You only need to do these steps once, when setting up the repo. **The release workflow uses [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers), so there is no `NPM_TOKEN` secret to manage** — npm authenticates each publish via GitHub's OIDC token, which is minted fresh per workflow run.
 
 ### 1. Create the GitHub repository
 
@@ -14,25 +14,9 @@ Push this repo to GitHub if you haven't already:
 gh repo create jhubbardsf/adzuna-sdk --public --source=. --remote=origin --push
 ```
 
-### 2. Create an npm account and access token
+### 2. Claim the package name on npm (one-time manual publish)
 
-- Sign in (or up) at [npmjs.com](https://www.npmjs.com/).
-- Go to **Access Tokens → Generate New Token → Granular Access Token**.
-- Scopes: **Read and write** for packages. If the `adzuna-sdk` package doesn't exist yet, also allow **Create new packages**.
-- Expiration: whatever you prefer (1 year is reasonable).
-- Copy the token.
-
-### 3. Add the npm token as a repo secret
-
-```bash
-gh secret set NPM_TOKEN --body "<paste-your-npm-token>"
-```
-
-Or via the UI: **Settings → Secrets and variables → Actions → New repository secret** with name `NPM_TOKEN`.
-
-### 4. (Optional) First-time manual publish
-
-If the package name isn't claimed yet, npm's provenance publishing may refuse the first upload without prior ownership. The easiest fix is to publish `0.1.0` manually once:
+If `adzuna-sdk` isn't on npm yet, you need an initial manual publish to claim the name. Trusted Publishing is configured *per package*, so the package must exist before npm will let you wire up the trust policy.
 
 ```bash
 npm login
@@ -40,7 +24,22 @@ bunx tsc
 npm publish --access public
 ```
 
-After that, every subsequent release goes through the workflow.
+This publishes whatever version is currently in `package.json` (e.g. `0.1.0`). Subsequent releases all go through the workflow — this is the only time you publish from your laptop.
+
+### 3. Configure Trusted Publishing on npm
+
+In the npm UI for the package:
+
+1. Go to [npmjs.com/package/adzuna-sdk/access](https://www.npmjs.com/package/adzuna-sdk/access) (or **Package settings → Access**).
+2. Click **Trusted Publisher → Add Trusted Publisher → GitHub Actions**.
+3. Fill in:
+   - **Repository owner**: `jhubbardsf`
+   - **Repository name**: `adzuna-sdk`
+   - **Workflow filename**: `release.yml`
+   - **Environment**: leave blank (the workflow doesn't use a deployment environment)
+4. Save.
+
+From this point on, the `release.yml` workflow can publish to npm with no token. Any other workflow file, fork, or branch trying to publish under this package name will be rejected by npm's OIDC verifier.
 
 ## Cutting a Release
 
@@ -128,7 +127,7 @@ Users can verify the publish was signed by GitHub Actions via the provenance bad
 Trigger:        GitHub UI → Actions → Release → Run workflow
 Input:          version = patch | minor | major | X.Y.Z
                 dry_run = false (true to rehearse)
-Requires:       NPM_TOKEN secret, repo push access via Action
+Auth:           npm Trusted Publishing via GitHub OIDC (no token secret)
 Produces:       chore(release) commit, vX.Y.Z tag, npm publish, GH release
 Rollback:       delete tag + release, revert commit, re-run workflow
 ```
