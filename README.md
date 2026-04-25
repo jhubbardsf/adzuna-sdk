@@ -312,6 +312,10 @@ bun run build        # emit dist/
 
 The schema is generated from `adzuna_swagger.json` via [`openapi-typescript`](https://github.com/openapi-ts/openapi-typescript). Regenerate whenever the swagger changes; the resulting `src/schema.ts` is checked in so consumers don't need the generator as a runtime dependency.
 
+## Releases
+
+Releases are fully automated via GitHub Actions. See [`RELEASE_PROCESS.md`](./RELEASE_PROCESS.md) for how to cut a release (spoiler: **Actions → Release → Run workflow → pick `patch`/`minor`/`major`**).
+
 ## License
 
 MIT.
