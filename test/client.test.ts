@@ -1,6 +1,12 @@
 import { describe, test, expect } from 'bun:test';
 
-import { AdzunaClient, AdzunaError, Country, SortBy } from '../src/index.js';
+import {
+  AdzunaClient,
+  AdzunaError,
+  Country,
+  SortBy,
+  SortDir,
+} from '../src/index.js';
 
 interface CapturedRequest {
   method: string;
@@ -11,11 +17,25 @@ function makeFetch(
   respond: (req: Request) => Response | Promise<Response>,
   captured: CapturedRequest[] = [],
 ): typeof fetch {
-  return (async (input, init) => {
-    const request = new Request(input as RequestInfo, init);
+  return (async (input: string | URL | Request, init?: RequestInit) => {
+    const request =
+      input instanceof Request ? input : new Request(String(input), init);
     captured.push({ method: request.method, url: new URL(request.url) });
     return respond(request);
   }) as typeof fetch;
+}
+
+function sequenceFetch(...responses: Response[]): {
+  fetch: typeof fetch;
+  callCount: () => number;
+} {
+  let calls = 0;
+  const fetchImpl = (async () => {
+    const r = responses[calls] ?? responses[responses.length - 1]!;
+    calls += 1;
+    return r.clone();
+  }) as unknown as typeof fetch;
+  return { fetch: fetchImpl, callCount: () => calls };
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -156,9 +176,9 @@ describe('jobs.search', () => {
       ),
     });
 
-    await expect(client.jobs.search({ country: 'gb', page: 1 })).rejects.toBeInstanceOf(
-      AdzunaError,
-    );
+    await expect(
+      client.jobs.search({ country: 'gb', page: 1 }),
+    ).rejects.toBeInstanceOf(AdzunaError);
 
     try {
       await client.jobs.search({ country: 'gb', page: 1 });
@@ -169,6 +189,79 @@ describe('jobs.search', () => {
       expect(e.exception).toBe('AUTH_FAILED');
       expect(e.message).toBe('Authorisation failed');
     }
+  });
+
+  test('search builds correct URL for every supported country', async () => {
+    for (const country of Object.values(Country)) {
+      const captured: CapturedRequest[] = [];
+      const client = new AdzunaClient({
+        appId: 'id',
+        appKey: 'key',
+        fetch: makeFetch(
+          () => jsonResponse({ count: 0, results: [] }),
+          captured,
+        ),
+      });
+      await client.jobs.search({ country, page: 1 });
+      expect(captured[0]!.url.pathname).toBe(`/v1/api/jobs/${country}/search/1`);
+    }
+  });
+
+  test('search with all location fields populates query', async () => {
+    const captured: CapturedRequest[] = [];
+    const client = new AdzunaClient({
+      appId: 'id',
+      appKey: 'key',
+      fetch: makeFetch(() => jsonResponse({ count: 0, results: [] }), captured),
+    });
+
+    await client.jobs.search({
+      country: 'gb',
+      page: 1,
+      location0: 'UK',
+      location1: 'England',
+      location2: 'Greater London',
+      location3: 'London',
+      location4: 'Westminster',
+      location5: 'Mayfair',
+      location6: 'W1',
+      location7: 'Mayfair',
+    });
+
+    const params = captured[0]!.url.searchParams;
+    for (let i = 0; i <= 7; i += 1) {
+      expect(params.has(`location${i}`)).toBe(true);
+    }
+  });
+
+  test('search with all boolean flags and every sort option', async () => {
+    const captured: CapturedRequest[] = [];
+    const client = new AdzunaClient({
+      appId: 'id',
+      appKey: 'key',
+      fetch: makeFetch(() => jsonResponse({ count: 0, results: [] }), captured),
+    });
+
+    await client.jobs.search({
+      country: 'gb',
+      page: 1,
+      fullTime: true,
+      partTime: true,
+      contract: true,
+      permanent: true,
+      salaryIncludeUnknown: true,
+      sortBy: SortBy.Salary,
+      sortDir: SortDir.Up,
+    });
+
+    const params = captured[0]!.url.searchParams;
+    expect(params.get('full_time')).toBe('1');
+    expect(params.get('part_time')).toBe('1');
+    expect(params.get('contract')).toBe('1');
+    expect(params.get('permanent')).toBe('1');
+    expect(params.get('salary_include_unknown')).toBe('1');
+    expect(params.get('sort_by')).toBe('salary');
+    expect(params.get('sort_dir')).toBe('up');
   });
 });
 
@@ -299,5 +392,224 @@ describe('version', () => {
     expect(captured[0]!.url.pathname).toBe('/v1/api/version');
     expect(captured[0]!.url.searchParams.get('app_id')).toBe('id');
     expect(v.api_version).toBe(1);
+  });
+});
+
+describe('retry behavior', () => {
+  test('retries once on 429 then succeeds', async () => {
+    const seq = sequenceFetch(
+      jsonResponse({ exception: 'RATE_LIMITED' }, 429),
+      jsonResponse({ count: 1, results: [] }),
+    );
+    const client = new AdzunaClient({
+      appId: 'id',
+      appKey: 'key',
+      fetch: seq.fetch,
+    });
+
+    const res = await client.jobs.search({ country: 'gb', page: 1 });
+    expect(res.count).toBe(1);
+    expect(seq.callCount()).toBe(2);
+  });
+
+  test('retries on 503 twice then succeeds', async () => {
+    const seq = sequenceFetch(
+      jsonResponse({ exception: 'UNAVAILABLE' }, 503),
+      jsonResponse({ exception: 'UNAVAILABLE' }, 503),
+      jsonResponse({ count: 0, results: [] }),
+    );
+    const client = new AdzunaClient({
+      appId: 'id',
+      appKey: 'key',
+      fetch: seq.fetch,
+    });
+
+    await client.jobs.search({ country: 'gb', page: 1 });
+    expect(seq.callCount()).toBe(3);
+  });
+
+  test('exhausts retries and throws AdzunaError on persistent 429', async () => {
+    const seq = sequenceFetch(jsonResponse({ exception: 'RATE_LIMITED' }, 429));
+    const client = new AdzunaClient({
+      appId: 'id',
+      appKey: 'key',
+      retry: 2,
+      fetch: seq.fetch,
+    });
+
+    await expect(
+      client.jobs.search({ country: 'gb', page: 1 }),
+    ).rejects.toBeInstanceOf(AdzunaError);
+    // limit: 2 means 1 initial + 2 retries = 3 attempts
+    expect(seq.callCount()).toBe(3);
+  });
+
+  test('retry: 0 disables retries (single attempt)', async () => {
+    const seq = sequenceFetch(jsonResponse({ exception: 'UNAVAILABLE' }, 503));
+    const client = new AdzunaClient({
+      appId: 'id',
+      appKey: 'key',
+      retry: 0,
+      fetch: seq.fetch,
+    });
+
+    await expect(
+      client.jobs.search({ country: 'gb', page: 1 }),
+    ).rejects.toBeInstanceOf(AdzunaError);
+    expect(seq.callCount()).toBe(1);
+  });
+});
+
+describe('timeout behavior', () => {
+  test('throws when fetch is slower than timeout', async () => {
+    const slowFetch = (async () => {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return jsonResponse({ count: 0, results: [] });
+    }) as unknown as typeof fetch;
+    const client = new AdzunaClient({
+      appId: 'id',
+      appKey: 'key',
+      timeout: 50,
+      retry: 0,
+      fetch: slowFetch,
+    });
+
+    await expect(
+      client.jobs.search({ country: 'gb', page: 1 }),
+    ).rejects.toThrow();
+  });
+});
+
+describe('custom client config', () => {
+  test('honors custom baseUrl', async () => {
+    const captured: CapturedRequest[] = [];
+    const client = new AdzunaClient({
+      appId: 'id',
+      appKey: 'key',
+      baseUrl: 'https://custom.example.com/api/v2',
+      fetch: makeFetch(() => jsonResponse({ count: 0, results: [] }), captured),
+    });
+
+    await client.jobs.search({ country: 'gb', page: 1 });
+    expect(captured[0]!.url.origin).toBe('https://custom.example.com');
+    expect(captured[0]!.url.pathname).toBe('/api/v2/jobs/gb/search/1');
+  });
+});
+
+describe('error edge cases', () => {
+  test('500 with valid Exception body maps to AdzunaError', async () => {
+    const client = new AdzunaClient({
+      appId: 'id',
+      appKey: 'key',
+      retry: 0,
+      fetch: makeFetch(() =>
+        jsonResponse(
+          { exception: 'INTERNAL_ERROR', display: 'Server crashed' },
+          500,
+        ),
+      ),
+    });
+
+    try {
+      await client.jobs.search({ country: 'gb', page: 1 });
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(AdzunaError);
+      const e = err as AdzunaError;
+      expect(e.status).toBe(500);
+      expect(e.exception).toBe('INTERNAL_ERROR');
+    }
+  });
+
+  test('502 with non-JSON body falls back to non-AdzunaError', async () => {
+    const client = new AdzunaClient({
+      appId: 'id',
+      appKey: 'key',
+      retry: 0,
+      fetch: makeFetch(
+        () =>
+          new Response('<html>Bad Gateway</html>', {
+            status: 502,
+            headers: { 'content-type': 'text/html' },
+          }),
+      ),
+    });
+
+    let err: unknown;
+    try {
+      await client.jobs.search({ country: 'gb', page: 1 });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(AdzunaError);
+  });
+
+  test('400 with empty body falls back to non-AdzunaError', async () => {
+    const client = new AdzunaClient({
+      appId: 'id',
+      appKey: 'key',
+      retry: 0,
+      fetch: makeFetch(() => new Response('', { status: 400 })),
+    });
+
+    let err: unknown;
+    try {
+      await client.jobs.search({ country: 'gb', page: 1 });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(AdzunaError);
+  });
+
+  test('network failure propagates through', async () => {
+    const failingFetch = (async () => {
+      throw new TypeError('Failed to fetch');
+    }) as unknown as typeof fetch;
+    const client = new AdzunaClient({
+      appId: 'id',
+      appKey: 'key',
+      retry: 0,
+      fetch: failingFetch,
+    });
+
+    await expect(
+      client.jobs.search({ country: 'gb', page: 1 }),
+    ).rejects.toThrow('Failed to fetch');
+  });
+});
+
+describe('concurrent requests', () => {
+  test('5 overlapping requests each receive auth params', async () => {
+    const captured: CapturedRequest[] = [];
+    const client = new AdzunaClient({
+      appId: 'id',
+      appKey: 'key',
+      fetch: makeFetch(() => jsonResponse({ count: 0, results: [] }), captured),
+    });
+
+    await Promise.all([
+      client.jobs.search({ country: 'gb', page: 1 }),
+      client.jobs.search({ country: 'us', page: 2 }),
+      client.jobs.search({ country: 'fr', page: 3 }),
+      client.jobs.search({ country: 'de', page: 4 }),
+      client.jobs.search({ country: 'au', page: 5 }),
+    ]);
+
+    expect(captured).toHaveLength(5);
+    for (const req of captured) {
+      expect(req.url.searchParams.get('app_id')).toBe('id');
+      expect(req.url.searchParams.get('app_key')).toBe('key');
+    }
+
+    const pathnames = captured.map((r) => r.url.pathname).sort();
+    expect(pathnames).toEqual([
+      '/v1/api/jobs/au/search/5',
+      '/v1/api/jobs/de/search/4',
+      '/v1/api/jobs/fr/search/3',
+      '/v1/api/jobs/gb/search/1',
+      '/v1/api/jobs/us/search/2',
+    ]);
   });
 });
