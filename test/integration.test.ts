@@ -18,10 +18,10 @@ if (!APP_ID || !APP_KEY) {
 const client = new AdzunaClient({
   appId: APP_ID ?? 'placeholder',
   appKey: APP_KEY ?? 'placeholder',
-  timeout: 30_000,
+  timeout: 60_000,
 });
 
-const TEST_TIMEOUT_MS = 35_000;
+const TEST_TIMEOUT_MS = 65_000;
 
 describeIntegration('integration: live Adzuna API', () => {
   test(
@@ -109,11 +109,15 @@ describeIntegration('integration: live Adzuna API', () => {
   test(
     'jobs.geodata returns locations array',
     async () => {
-      // Narrow with location0=UK so the endpoint doesn't scan every region —
-      // an unfiltered geodata call routinely takes 15-30s server-side.
+      // Geodata is genuinely slow — server-side it scans every sub-location
+      // within the area you describe. Drilling down to a single county
+      // (UK → South East England → Surrey) keeps response time reasonable.
+      // The unfiltered "all of GB" call exceeds 60s in many regions.
       const res = await client.jobs.geodata({
         country: 'gb',
         location0: 'UK',
+        location1: 'South East England',
+        location2: 'Surrey',
       });
       expect(Array.isArray(res.locations)).toBe(true);
     },
